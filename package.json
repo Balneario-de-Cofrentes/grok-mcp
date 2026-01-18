@@ -22,15 +22,18 @@
     "function-calling"
   ],
   "author": "Braden Olmstead",
+  "contributors": [
+    "Balneario-de-Cofrentes (search_parameters support)"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Bob-lance/grok-mcp.git"
+    "url": "git+https://github.com/Balneario-de-Cofrentes/grok-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/Bob-lance/grok-mcp/issues"
+    "url": "https://github.com/Balneario-de-Cofrentes/grok-mcp/issues"
   },
-  "homepage": "https://github.com/Bob-lance/grok-mcp#readme",
+  "homepage": "https://github.com/Balneario-de-Cofrentes/grok-mcp#readme",
   "engines": {
     "node": ">=16.0.0"
   },
