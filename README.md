@@ -4,15 +4,29 @@
 [![npm version](https://img.shields.io/npm/v/grok-mcp.svg?style=flat-square)](https://www.npmjs.com/package/grok-mcp) <!-- Replace with your actual package name if different -->
 [![Smithery Build Status](https://api.smithery.ai/badges/github.com/Bob-lance/grok-mcp/build-status.svg)](https://smithery.ai/Bob-lance/grok-mcp) <!-- Replace with your actual repo path -->
 
-A Model Context Protocol (MCP) plugin that provides seamless access to Grok AI's powerful capabilities directly from Cline.
+A Model Context Protocol (MCP) plugin that provides seamless access to Grok AI's powerful capabilities directly from Claude Code and Cline.
+
+> **Fork Notice:** This is an enhanced fork with real-time web/X search support via `search_parameters`.
+> Original: [Bob-lance/grok-mcp](https://github.com/Bob-lance/grok-mcp)
 
 ## Features
 
 This plugin exposes three powerful tools through the MCP interface:
 
-1. **Chat Completion** - Generate text responses using Grok's language models
+1. **Chat Completion** - Generate text responses using Grok's language models with **real-time web/X search support**
 2. **Image Understanding** - Analyze images with Grok's vision capabilities
 3. **Function Calling** - Use Grok to call functions based on user input
+
+### 🆕 Real-Time Search Support
+
+This fork adds comprehensive `search_parameters` support to enable Grok's real-time web and X/Twitter search capabilities:
+
+- **mode**: `auto` (model decides), `on` (force search), or `off` (disable)
+- **sources**: Array of `web`, `x`, `news`, `rss`
+- **Date filtering**: `from_date`, `to_date` (ISO 8601)
+- **Geographic filtering**: `country` code
+- **Website exclusions**: `excluded_websites` array
+- **X-specific filters**: `x_handles`, `x_min_favorites`, `x_min_views`
 
 ## Prerequisites
 
@@ -89,6 +103,33 @@ Generate text responses using Grok's language models:
     }
   ],
   "temperature": 0.7
+}
+</arguments>
+</use_mcp_tool>
+```
+
+#### With Real-Time Search
+
+Enable real-time web and X/Twitter search:
+
+```javascript
+<use_mcp_tool>
+<server_name>grok-mcp</server_name>
+<tool_name>chat_completion</tool_name>
+<arguments>
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "What are the latest AI developments this week?"
+    }
+  ],
+  "model": "grok-4-1-fast",
+  "search_parameters": {
+    "mode": "auto",
+    "sources": ["web", "x"],
+    "from_date": "2026-01-11"
+  }
 }
 </arguments>
 </use_mcp_tool>
@@ -180,9 +221,23 @@ Generate a response using Grok AI chat completion.
 **Parameters:**
 
 - `messages` (required): Array of message objects with role and content
-- `model` (optional): Grok model to use (defaults to grok-3-mini-beta)
+- `model` (optional): Grok model to use (defaults to grok-4-1-fast)
+  - `grok-4-1-fast` - 2M context, reasoning, recommended for search
+  - `grok-4-1-fast-non-reasoning` - 2M context, instant responses
+  - `grok-code-fast-1` - 256K context, optimized for coding
+  - `grok-3-mini-beta` - Economical option
 - `temperature` (optional): Sampling temperature (0-2, defaults to 1)
 - `max_tokens` (optional): Maximum number of tokens to generate (defaults to 16384)
+- `search_parameters` (optional): Enable real-time web/X search
+  - `mode` (string): `auto` (model decides), `on` (force search), or `off` (disable)
+  - `sources` (array): Array of `web`, `x`, `news`, `rss` (defaults to `["web", "x"]`)
+  - `from_date` (string): Start date for results (ISO 8601, e.g., "2026-01-11")
+  - `to_date` (string): End date for results (ISO 8601)
+  - `country` (string): Country code filter (e.g., "US", "GB")
+  - `excluded_websites` (array): Websites to exclude from results
+  - `x_handles` (array): Specific X/Twitter accounts to search
+  - `x_min_favorites` (integer): Minimum likes threshold for X posts
+  - `x_min_views` (integer): Minimum views threshold for X posts
 
 ### Image Understanding
 
@@ -206,7 +261,7 @@ Use Grok AI to call functions based on user input.
 - `messages` (required): Array of message objects with role and content
 - `tools` (required): Array of tool objects with type, function name, description, and parameters
 - `tool_choice` (optional): Tool choice mode (auto, required, none, defaults to auto)
-- `model` (optional): Grok model to use (defaults to grok-3-mini-beta)
+- `model` (optional): Grok model to use (defaults to grok-4-1-fast)
 
 ## Development
 
