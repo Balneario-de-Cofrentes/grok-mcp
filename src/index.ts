@@ -85,8 +85,8 @@ class GrokMcpServer {
               },
               model: {
                 type: 'string',
-                description: 'Grok model to use. For real-time search, use grok-4. Options: grok-4, grok-3, grok-3-mini-beta, grok-2-latest',
-                default: 'grok-3-mini-beta'
+                description: 'Grok model to use. Options: grok-4-1-fast (2M context, reasoning, recommended), grok-4-1-fast-non-reasoning (2M context, fast), grok-code-fast-1 (256K context, coding), grok-3-mini-beta (economical)',
+                default: 'grok-4-1-fast'
               },
               temperature: {
                 type: 'number',
@@ -284,7 +284,7 @@ class GrokMcpServer {
     
     // Create options object
     const options = {
-      model: model || 'grok-3-mini-beta',
+      model: model || 'grok-4-1-fast',
       temperature: temperature !== undefined ? temperature : 1,
       max_tokens: max_tokens !== undefined ? max_tokens : 16384,
       ...otherOptions
@@ -398,7 +398,7 @@ class GrokMcpServer {
     
     // Create options object
     const options = {
-      model: model || 'grok-3-mini-beta',
+      model: model || 'grok-4-1-fast',
       tool_choice: tool_choice || 'auto',
       ...otherOptions
     };
