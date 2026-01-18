@@ -284,7 +284,7 @@ class GrokMcpServer {
     
     // Create options object
     const options = {
-      model: model || 'grok-2-latest',
+      model: model || 'grok-3-mini-beta',
       temperature: temperature !== undefined ? temperature : 1,
       max_tokens: max_tokens !== undefined ? max_tokens : 16384,
       ...otherOptions
@@ -398,7 +398,7 @@ class GrokMcpServer {
     
     // Create options object
     const options = {
-      model: model || 'grok-2-latest',
+      model: model || 'grok-3-mini-beta',
       tool_choice: tool_choice || 'auto',
       ...otherOptions
     };
