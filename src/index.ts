@@ -85,7 +85,7 @@ class GrokMcpServer {
               },
               model: {
                 type: 'string',
-                description: 'Grok model to use (e.g., grok-2-latest, grok-3, grok-3-reasoner, grok-3-deepsearch, grok-3-mini-beta)',
+                description: 'Grok model to use. For real-time search, use grok-4. Options: grok-4, grok-3, grok-3-mini-beta, grok-2-latest',
                 default: 'grok-3-mini-beta'
               },
               temperature: {
@@ -99,6 +99,57 @@ class GrokMcpServer {
                 type: 'integer',
                 description: 'Maximum number of tokens to generate',
                 default: 16384
+              },
+              search_parameters: {
+                type: 'object',
+                description: 'Enable real-time web/X search. Set mode to "auto" (model decides) or "on" (force search).',
+                properties: {
+                  mode: {
+                    type: 'string',
+                    description: 'Search mode: "auto" (model decides if search needed), "on" (force search), or "off" (disable)',
+                    enum: ['auto', 'on', 'off'],
+                    default: 'off'
+                  },
+                  sources: {
+                    type: 'array',
+                    description: 'Sources to search: "web", "x" (Twitter/X), "news", "rss"',
+                    items: {
+                      type: 'string',
+                      enum: ['web', 'x', 'news', 'rss']
+                    },
+                    default: ['web', 'x']
+                  },
+                  from_date: {
+                    type: 'string',
+                    description: 'Start date for search results (ISO 8601 format, e.g., "2026-01-01")'
+                  },
+                  to_date: {
+                    type: 'string',
+                    description: 'End date for search results (ISO 8601 format)'
+                  },
+                  country: {
+                    type: 'string',
+                    description: 'Country code to filter results (e.g., "US", "GB")'
+                  },
+                  excluded_websites: {
+                    type: 'array',
+                    description: 'Websites to exclude from search results',
+                    items: { type: 'string' }
+                  },
+                  x_handles: {
+                    type: 'array',
+                    description: 'X/Twitter handles to include in search',
+                    items: { type: 'string' }
+                  },
+                  x_min_favorites: {
+                    type: 'integer',
+                    description: 'Minimum favorites/likes for X posts'
+                  },
+                  x_min_views: {
+                    type: 'integer',
+                    description: 'Minimum views for X posts'
+                  }
+                }
               }
             },
             required: ['messages']
