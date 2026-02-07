@@ -111,7 +111,7 @@ export class GrokApiClient {
   async createFunctionCall(messages: any[], tools: any[], options: any = {}): Promise<any> {
     try {
       console.error('[API] Creating function call request...');
-      
+
       const requestBody = {
         messages,
         model: options.model || 'grok-3-mini-beta',
@@ -119,11 +119,40 @@ export class GrokApiClient {
         tool_choice: options.tool_choice || 'auto',
         ...options
       };
-      
+
       const response = await this.axiosInstance.post('/chat/completions', requestBody);
       return response.data;
     } catch (error) {
       console.error('[Error] Failed to create function call request:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Make a request to the Responses API (supports built-in tools like web_search, x_search)
+   * @param messages - The messages to send as input
+   * @param tools - Built-in tools array (e.g. [{type: "web_search"}, {type: "x_search"}])
+   * @param options - Additional options for the request
+   * @returns The API response
+   */
+  async createResponse(messages: any[], tools: any[], options: any = {}): Promise<any> {
+    try {
+      console.error('[API] Creating response with built-in tools...');
+
+      const { max_tokens, ...restOptions } = options;
+
+      const requestBody = {
+        input: messages,
+        model: options.model || 'grok-4-1-fast',
+        tools,
+        max_output_tokens: max_tokens || 16384,
+        ...restOptions
+      };
+
+      const response = await this.axiosInstance.post('/responses', requestBody);
+      return response.data;
+    } catch (error) {
+      console.error('[Error] Failed to create response:', error);
       throw error;
     }
   }

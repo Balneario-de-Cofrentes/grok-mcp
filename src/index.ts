@@ -100,56 +100,19 @@ class GrokMcpServer {
                 description: 'Maximum number of tokens to generate',
                 default: 16384
               },
-              search_parameters: {
-                type: 'object',
-                description: 'Enable real-time web/X search. Set mode to "auto" (model decides) or "on" (force search).',
-                properties: {
-                  mode: {
-                    type: 'string',
-                    description: 'Search mode: "auto" (model decides if search needed), "on" (force search), or "off" (disable)',
-                    enum: ['auto', 'on', 'off'],
-                    default: 'off'
-                  },
-                  sources: {
-                    type: 'array',
-                    description: 'Sources to search: "web", "x" (Twitter/X), "news", "rss"',
-                    items: {
-                      type: 'string',
-                      enum: ['web', 'x', 'news', 'rss']
-                    },
-                    default: ['web', 'x']
-                  },
-                  from_date: {
-                    type: 'string',
-                    description: 'Start date for search results (ISO 8601 format, e.g., "2026-01-01")'
-                  },
-                  to_date: {
-                    type: 'string',
-                    description: 'End date for search results (ISO 8601 format)'
-                  },
-                  country: {
-                    type: 'string',
-                    description: 'Country code to filter results (e.g., "US", "GB")'
-                  },
-                  excluded_websites: {
-                    type: 'array',
-                    description: 'Websites to exclude from search results',
-                    items: { type: 'string' }
-                  },
-                  x_handles: {
-                    type: 'array',
-                    description: 'X/Twitter handles to include in search',
-                    items: { type: 'string' }
-                  },
-                  x_min_favorites: {
-                    type: 'integer',
-                    description: 'Minimum favorites/likes for X posts'
-                  },
-                  x_min_views: {
-                    type: 'integer',
-                    description: 'Minimum views for X posts'
-                  }
-                }
+              search_tools: {
+                type: 'array',
+                description: 'Enable built-in search tools via the Responses API. Array of tool types: "web_search" and/or "x_search". Example: ["web_search", "x_search"]. Omit or pass empty array to disable search.',
+                items: {
+                  type: 'string',
+                  enum: ['web_search', 'x_search']
+                },
+                default: []
+              },
+              allowed_domains: {
+                type: 'array',
+                description: 'When using web_search, restrict results to these domains (e.g., ["wikipedia.org"])',
+                items: { type: 'string' }
               }
             },
             required: ['messages']
@@ -274,25 +237,68 @@ class GrokMcpServer {
    */
   private async handleChatCompletion(args: any) {
     console.error('[Tool] Handling chat_completion tool call');
-    
-    const { messages, model, temperature, max_tokens, ...otherOptions } = args;
-    
+
+    const { messages, model, temperature, max_tokens, search_tools, allowed_domains, search_parameters, ...otherOptions } = args;
+
     // Validate messages
     if (!Array.isArray(messages) || messages.length === 0) {
       throw new Error('Messages must be a non-empty array');
     }
-    
-    // Create options object
+
+    // Determine if search is requested (support both new search_tools and legacy search_parameters)
+    const hasSearchTools = Array.isArray(search_tools) && search_tools.length > 0;
+    const hasLegacySearch = search_parameters && search_parameters.mode && search_parameters.mode !== 'off';
+
+    if (hasSearchTools || hasLegacySearch) {
+      // Route through Responses API with built-in tools
+      console.error('[Tool] Using Responses API for search');
+
+      let builtInTools: any[];
+      if (hasSearchTools) {
+        builtInTools = search_tools.map((t: string) => {
+          const tool: any = { type: t };
+          if (t === 'web_search' && allowed_domains && allowed_domains.length > 0) {
+            tool.filters = { allowed_domains };
+          }
+          return tool;
+        });
+      } else {
+        // Legacy fallback: map search_parameters to built-in tools
+        builtInTools = [{ type: 'web_search' }, { type: 'x_search' }];
+      }
+
+      const options = {
+        model: model || 'grok-4-1-fast',
+        temperature: temperature !== undefined ? temperature : 1,
+        max_tokens: max_tokens !== undefined ? max_tokens : 16384,
+      };
+
+      const response = await this.grokClient.createResponse(messages, builtInTools, options);
+
+      // Extract text from the Responses API output
+      const text = this.extractResponseText(response);
+      const citations = this.extractCitations(response);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: citations ? `${text}\n\n${citations}` : text,
+          },
+        ],
+      };
+    }
+
+    // Standard chat completion (no search)
     const options = {
       model: model || 'grok-4-1-fast',
       temperature: temperature !== undefined ? temperature : 1,
       max_tokens: max_tokens !== undefined ? max_tokens : 16384,
       ...otherOptions
     };
-    
-    // Call Grok API
+
     const response = await this.grokClient.createChatCompletion(messages, options);
-    
+
     return {
       content: [
         {
@@ -301,6 +307,46 @@ class GrokMcpServer {
         },
       ],
     };
+  }
+
+  /**
+   * Extract text content from Responses API output
+   */
+  private extractResponseText(response: any): string {
+    if (!response.output) return '';
+    for (const item of response.output) {
+      if (item.type === 'message' && item.content) {
+        for (const block of item.content) {
+          if (block.type === 'output_text') {
+            return block.text;
+          }
+        }
+      }
+    }
+    return '';
+  }
+
+  /**
+   * Extract citations from Responses API output
+   */
+  private extractCitations(response: any): string {
+    if (!response.output) return '';
+    for (const item of response.output) {
+      if (item.type === 'message' && item.content) {
+        for (const block of item.content) {
+          if (block.annotations && block.annotations.length > 0) {
+            const urls = block.annotations
+              .filter((a: any) => a.type === 'url_citation')
+              .map((a: any) => a.url);
+            if (urls.length > 0) {
+              const unique = [...new Set(urls)] as string[];
+              return 'Sources:\n' + unique.map((u) => `- ${u}`).join('\n');
+            }
+          }
+        }
+      }
+    }
+    return '';
   }
 
   /**
