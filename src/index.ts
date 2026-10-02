@@ -8,12 +8,215 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GrokApiClient } from './grok-api-client.js';
+import { formatApiError, formatResponse } from './format.js';
+import { DEFAULT_DEPTH, DEPTHS, REASONING_EFFORTS, depthGuide, resolveModel } from './profiles.js';
+import { ResponsesOptions, SEARCH_TOOLS, SearchTool, buildImageInput, buildResponsesRequest } from './request.js';
 
 // Get API key from environment variable
 const API_KEY = process.env.XAI_API_KEY;
 if (!API_KEY) {
   throw new Error('[Error] XAI_API_KEY environment variable is required');
 }
+
+const stringList = (description: string) => ({ type: 'array', description, items: { type: 'string' } });
+
+const MODEL_PROPERTIES = {
+  depth: {
+    type: 'string',
+    description: `How much model and reasoning to spend. ${depthGuide()}`,
+    enum: Object.keys(DEPTHS),
+    default: DEFAULT_DEPTH,
+  },
+  model: {
+    type: 'string',
+    description:
+      'Overrides the model chosen by depth. Current models: grok-4.7, grok-4.6, grok-4.5, grok-4.3, grok-4.20-multi-agent, grok-build-0.1.',
+  },
+  reasoning_effort: {
+    type: 'string',
+    description:
+      'Overrides the reasoning effort chosen by depth. grok-4.7 accepts low to xhigh; only grok-4.3 accepts none. On grok-4.20-multi-agent, low/medium run 4 agents and high/xhigh run 16.',
+    enum: REASONING_EFFORTS,
+  },
+  max_tokens: {
+    type: 'integer',
+    description: 'Cap on output tokens, reasoning included. Omit to use the API default.',
+  },
+};
+
+const SEARCH_TUNING_PROPERTIES = {
+  enable_image_understanding: {
+    type: 'boolean',
+    description: 'Let the model look at images it finds while searching. Billed as image tokens.',
+  },
+  max_turns: {
+    type: 'integer',
+    description: 'Cap on search/reasoning turns. 1-2 for quick lookups, 3-5 balanced, omit for the server default.',
+  },
+};
+
+const WEB_SEARCH_PROPERTIES = {
+  allowed_domains: stringList('Only search these domains (max 5). Cannot be combined with excluded_domains.'),
+  excluded_domains: stringList('Never search these domains (max 5).'),
+};
+
+const X_SEARCH_PROPERTIES = {
+  allowed_x_handles: stringList('Only consider posts from these X handles (max 20). Cannot be combined with excluded_x_handles.'),
+  excluded_x_handles: stringList('Ignore posts from these X handles (max 20).'),
+  from_date: {
+    type: 'string',
+    description: 'Earliest post date, YYYY-MM-DD. Narrowing the range reduces posts fetched and cost.',
+  },
+  to_date: {
+    type: 'string',
+    description: 'Latest post date, YYYY-MM-DD.',
+  },
+  enable_video_understanding: {
+    type: 'boolean',
+    description: 'Let the model watch videos in the posts it finds. Billed as tokens.',
+  },
+};
+
+/** Input schema shared by x_search and web_search: a query, the source's own filters and the common tuning. */
+const searchInputSchema = (sourceProperties: object) => ({
+  type: 'object',
+  properties: {
+    query: {
+      type: 'string',
+      description: 'What to find out, in natural language. Say how many results and which fields you want.',
+    },
+    ...sourceProperties,
+    ...SEARCH_TUNING_PROPERTIES,
+    ...MODEL_PROPERTIES,
+  },
+  required: ['query'],
+});
+
+const messagesProperty = (roles: string[], extraProperties: object = {}) => ({
+  type: 'array',
+  description: 'Array of message objects with role and content',
+  items: {
+    type: 'object',
+    properties: {
+      role: {
+        type: 'string',
+        description: `Role of the message sender (${roles.join(', ')})`,
+        enum: roles,
+      },
+      content: {
+        type: 'string',
+        description: 'Content of the message',
+      },
+      ...extraProperties,
+    },
+    required: ['role', 'content'],
+  },
+});
+
+const TOOLS = [
+  {
+    name: 'x_search',
+    description:
+      'Search X (Twitter) with Grok: keyword and semantic post search, user search and thread fetch. Returns an answer with post links and a usage line. X Search bills $5 per 1,000 posts fetched, so cost follows how many posts the model reads: narrow with from_date/to_date and allowed_x_handles, and pick the lowest depth that answers the question.',
+    inputSchema: searchInputSchema(X_SEARCH_PROPERTIES),
+  },
+  {
+    name: 'web_search',
+    description:
+      'Search and browse the live web with Grok. Returns an answer with source links and a usage line. Costs about $0.02 to $0.03 per query.',
+    inputSchema: searchInputSchema(WEB_SEARCH_PROPERTIES),
+  },
+  {
+    name: 'chat_completion',
+    description:
+      'Generate a response with Grok from a list of messages. Pass search_tools to let it search the web, X or both in one request; without them Grok knows nothing after its training cutoff. For a single-source search prefer the x_search or web_search tools.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        messages: messagesProperty(['system', 'user', 'assistant']),
+        search_tools: {
+          type: 'array',
+          description: 'Built-in search tools to enable: "web_search" and/or "x_search".',
+          items: {
+            type: 'string',
+            enum: SEARCH_TOOLS,
+          },
+          default: [],
+        },
+        ...WEB_SEARCH_PROPERTIES,
+        ...X_SEARCH_PROPERTIES,
+        ...SEARCH_TUNING_PROPERTIES,
+        ...MODEL_PROPERTIES,
+        temperature: {
+          type: 'number',
+          description: 'Sampling temperature (0-2)',
+          minimum: 0,
+          maximum: 2,
+        },
+      },
+      required: ['messages'],
+    },
+  },
+  {
+    name: 'image_understanding',
+    description: 'Analyze an image with Grok vision. Accepts jpg/jpeg or png, up to 20 MiB.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        image_url: {
+          type: 'string',
+          description: 'Public URL that points directly to the image',
+        },
+        base64_image: {
+          type: 'string',
+          description: 'Base64-encoded image data (without the data:image prefix)',
+        },
+        mime_type: {
+          type: 'string',
+          description: 'MIME type of base64_image',
+          enum: ['image/jpeg', 'image/png'],
+          default: 'image/jpeg',
+        },
+        prompt: {
+          type: 'string',
+          description: 'Text prompt to accompany the image',
+        },
+        ...MODEL_PROPERTIES,
+      },
+      required: ['prompt'],
+    },
+  },
+  {
+    name: 'function_calling',
+    description: 'Use Grok AI to call functions based on user input',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        messages: messagesProperty(['system', 'user', 'assistant', 'tool'], {
+          tool_call_id: {
+            type: 'string',
+            description: 'ID of the tool call (for tool messages)',
+          },
+        }),
+        tools: {
+          type: 'array',
+          description: 'Array of tool objects with type, function name, description, and parameters',
+          items: {
+            type: 'object',
+          },
+        },
+        tool_choice: {
+          type: 'string',
+          description: 'Tool choice mode (auto, required, none)',
+          enum: ['auto', 'required', 'none'],
+          default: 'auto',
+        },
+        model: MODEL_PROPERTIES.model,
+      },
+      required: ['messages', 'tools'],
+    },
+  },
+];
 
 /**
  * GrokMcpServer - MCP server for Grok AI API integration
@@ -22,13 +225,11 @@ class GrokMcpServer {
   private server: Server;
   private grokClient: GrokApiClient;
 
-  constructor() {
-    console.error('[Setup] Initializing Grok MCP server...');
-    
+  constructor(apiKey: string) {
     this.server = new Server(
       {
         name: 'grok-mcp',
-        version: '1.0.0',
+        version: '2.0.0',
       },
       {
         capabilities: {
@@ -37,13 +238,10 @@ class GrokMcpServer {
       }
     );
 
-    // Initialize Grok API client
-    this.grokClient = new GrokApiClient(API_KEY as string);
+    this.grokClient = new GrokApiClient(apiKey);
 
-    // Set up tool handlers
     this.setupToolHandlers();
-    
-    // Error handling
+
     this.server.onerror = (error) => console.error('[MCP Error]', error);
     process.on('SIGINT', async () => {
       await this.server.close();
@@ -55,426 +253,95 @@ class GrokMcpServer {
    * Set up the MCP tool handlers
    */
   private setupToolHandlers() {
-    // List available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
-        {
-          name: 'chat_completion',
-          description: 'Generate a response using Grok AI chat completion',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              messages: {
-                type: 'array',
-                description: 'Array of message objects with role and content',
-                items: {
-                  type: 'object',
-                  properties: {
-                    role: {
-                      type: 'string',
-                      description: 'Role of the message sender (system, user, assistant)',
-                      enum: ['system', 'user', 'assistant']
-                    },
-                    content: {
-                      type: 'string',
-                      description: 'Content of the message'
-                    }
-                  },
-                  required: ['role', 'content']
-                }
-              },
-              model: {
-                type: 'string',
-                description: 'Grok model to use. Options: grok-4-1-fast (2M context, reasoning, recommended), grok-4-1-fast-non-reasoning (2M context, fast), grok-code-fast-1 (256K context, coding), grok-3-mini-beta (economical)',
-                default: 'grok-4-1-fast'
-              },
-              temperature: {
-                type: 'number',
-                description: 'Sampling temperature (0-2)',
-                minimum: 0,
-                maximum: 2,
-                default: 1
-              },
-              max_tokens: {
-                type: 'integer',
-                description: 'Maximum number of tokens to generate',
-                default: 16384
-              },
-              search_tools: {
-                type: 'array',
-                description: 'Enable built-in search tools via the Responses API. Array of tool types: "web_search" and/or "x_search". Example: ["web_search", "x_search"]. Omit or pass empty array to disable search.',
-                items: {
-                  type: 'string',
-                  enum: ['web_search', 'x_search']
-                },
-                default: []
-              },
-              allowed_domains: {
-                type: 'array',
-                description: 'When using web_search, restrict results to these domains (e.g., ["wikipedia.org"])',
-                items: { type: 'string' }
-              }
-            },
-            required: ['messages']
-          }
-        },
-        {
-          name: 'image_understanding',
-          description: 'Analyze images using Grok AI vision capabilities (Note: Grok 3 may support image creation)',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              image_url: {
-                type: 'string',
-                description: 'URL of the image to analyze'
-              },
-              base64_image: {
-                type: 'string',
-                description: 'Base64-encoded image data (without the data:image prefix)'
-              },
-              prompt: {
-                type: 'string',
-                description: 'Text prompt to accompany the image'
-              },
-              model: {
-                type: 'string',
-                description: 'Grok vision model to use (e.g., grok-2-vision-latest, potentially grok-3 variants)',
-                default: 'grok-2-vision-latest'
-              }
-            },
-            required: ['prompt']
-          }
-        },
-        {
-          name: 'function_calling',
-          description: 'Use Grok AI to call functions based on user input',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              messages: {
-                type: 'array',
-                description: 'Array of message objects with role and content',
-                items: {
-                  type: 'object',
-                  properties: {
-                    role: {
-                      type: 'string',
-                      description: 'Role of the message sender (system, user, assistant, tool)',
-                      enum: ['system', 'user', 'assistant', 'tool']
-                    },
-                    content: {
-                      type: 'string',
-                      description: 'Content of the message'
-                    },
-                    tool_call_id: {
-                      type: 'string',
-                      description: 'ID of the tool call (for tool messages)'
-                    }
-                  },
-                  required: ['role', 'content']
-                }
-              },
-              tools: {
-                type: 'array',
-                description: 'Array of tool objects with type, function name, description, and parameters',
-                items: {
-                  type: 'object'
-                }
-              },
-              tool_choice: {
-                type: 'string',
-                description: 'Tool choice mode (auto, required, none)',
-                enum: ['auto', 'required', 'none'],
-                default: 'auto'
-              },
-              model: {
-                type: 'string',
-                description: 'Grok model to use (e.g., grok-2-latest, grok-3, grok-3-reasoner, grok-3-deepsearch, grok-3-mini-beta)',
-                default: 'grok-3-mini-beta'
-              }
-            },
-            required: ['messages', 'tools']
-          }
-        }
-      ],
-    }));
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
-    // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      const args: any = request.params.arguments ?? {};
       try {
         switch (request.params.name) {
+          case 'x_search':
+            return await this.handleSearch(args, 'x_search');
+          case 'web_search':
+            return await this.handleSearch(args, 'web_search');
           case 'chat_completion':
-            return await this.handleChatCompletion(request.params.arguments);
+            return await this.handleChatCompletion(args);
           case 'image_understanding':
-            return await this.handleImageUnderstanding(request.params.arguments);
+            return await this.handleImageUnderstanding(args);
           case 'function_calling':
-            return await this.handleFunctionCalling(request.params.arguments);
+            return await this.handleFunctionCalling(args);
           default:
-            throw new McpError(
-              ErrorCode.MethodNotFound,
-              `Unknown tool: ${request.params.name}`
-            );
+            throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
         }
-      } catch (error: any) {
-        console.error(`[Error] Tool call error: ${error.message}`);
+      } catch (error) {
+        const message = formatApiError(error);
+        console.error(`[Error] ${request.params.name}: ${message}`);
         return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error.message}`,
-            },
-          ],
+          content: [{ type: 'text', text: `Error: ${message}` }],
           isError: true,
         };
       }
     });
   }
 
-  /**
-   * Handle chat completion tool calls
-   * @param args - Tool arguments
-   * @returns Tool response
-   */
+  /** Sends a Responses API request and renders the answer, its sources and its cost. */
+  private async respond(input: unknown[], options: ResponsesOptions) {
+    const startedAt = Date.now();
+    const response = await this.grokClient.createResponse(buildResponsesRequest(input, options));
+    return {
+      content: [{ type: 'text', text: formatResponse(response, Date.now() - startedAt) }],
+    };
+  }
+
+  private async handleSearch(args: any, tool: SearchTool) {
+    const { query, ...options } = args;
+    if (typeof query !== 'string' || query.trim() === '') {
+      throw new Error('query is required');
+    }
+    return this.respond([{ role: 'user', content: query }], { ...options, search_tools: [tool] });
+  }
+
   private async handleChatCompletion(args: any) {
-    console.error('[Tool] Handling chat_completion tool call');
-
-    const { messages, model, temperature, max_tokens, search_tools, allowed_domains, search_parameters, ...otherOptions } = args;
-
-    // Validate messages
-    if (!Array.isArray(messages) || messages.length === 0) {
-      throw new Error('Messages must be a non-empty array');
+    const { messages, search_parameters, ...options } = args;
+    if (search_parameters) {
+      throw new Error(
+        'search_parameters was removed by xAI. Pass search_tools: ["web_search", "x_search"] instead.'
+      );
     }
-
-    // Determine if search is requested (support both new search_tools and legacy search_parameters)
-    const hasSearchTools = Array.isArray(search_tools) && search_tools.length > 0;
-    const hasLegacySearch = search_parameters && search_parameters.mode && search_parameters.mode !== 'off';
-
-    if (hasSearchTools || hasLegacySearch) {
-      // Route through Responses API with built-in tools
-      console.error('[Tool] Using Responses API for search');
-
-      let builtInTools: any[];
-      if (hasSearchTools) {
-        builtInTools = search_tools.map((t: string) => {
-          const tool: any = { type: t };
-          if (t === 'web_search' && allowed_domains && allowed_domains.length > 0) {
-            tool.filters = { allowed_domains };
-          }
-          return tool;
-        });
-      } else {
-        // Legacy fallback: map search_parameters to built-in tools
-        builtInTools = [{ type: 'web_search' }, { type: 'x_search' }];
-      }
-
-      const options = {
-        model: model || 'grok-4-1-fast',
-        temperature: temperature !== undefined ? temperature : 1,
-        max_tokens: max_tokens !== undefined ? max_tokens : 16384,
-      };
-
-      const response = await this.grokClient.createResponse(messages, builtInTools, options);
-
-      // Extract text from the Responses API output
-      const text = this.extractResponseText(response);
-      const citations = this.extractCitations(response);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: citations ? `${text}\n\n${citations}` : text,
-          },
-        ],
-      };
-    }
-
-    // Standard chat completion (no search)
-    const options = {
-      model: model || 'grok-4-1-fast',
-      temperature: temperature !== undefined ? temperature : 1,
-      max_tokens: max_tokens !== undefined ? max_tokens : 16384,
-      ...otherOptions
-    };
-
-    const response = await this.grokClient.createChatCompletion(messages, options);
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: response.choices[0].message.content,
-        },
-      ],
-    };
+    return this.respond(messages, options);
   }
 
-  /**
-   * Extract text content from Responses API output
-   */
-  private extractResponseText(response: any): string {
-    if (!response.output) return '';
-    for (const item of response.output) {
-      if (item.type === 'message' && item.content) {
-        for (const block of item.content) {
-          if (block.type === 'output_text') {
-            return block.text;
-          }
-        }
-      }
-    }
-    return '';
-  }
-
-  /**
-   * Extract citations from Responses API output
-   */
-  private extractCitations(response: any): string {
-    if (!response.output) return '';
-    for (const item of response.output) {
-      if (item.type === 'message' && item.content) {
-        for (const block of item.content) {
-          if (block.annotations && block.annotations.length > 0) {
-            const urls = block.annotations
-              .filter((a: any) => a.type === 'url_citation')
-              .map((a: any) => a.url);
-            if (urls.length > 0) {
-              const unique = [...new Set(urls)] as string[];
-              return 'Sources:\n' + unique.map((u) => `- ${u}`).join('\n');
-            }
-          }
-        }
-      }
-    }
-    return '';
-  }
-
-  /**
-   * Handle image understanding tool calls
-   * @param args - Tool arguments
-   * @returns Tool response
-   */
   private async handleImageUnderstanding(args: any) {
-    console.error('[Tool] Handling image_understanding tool call');
-    
-    const { image_url, base64_image, prompt, model, ...otherOptions } = args;
-    
-    // Validate inputs
-    if (!prompt) {
-      throw new Error('Prompt is required');
-    }
-    
-    if (!image_url && !base64_image) {
-      throw new Error('Either image_url or base64_image is required');
-    }
-    
-    // Prepare message content
-    const content: any[] = [];
-    
-    // Add image
-    if (image_url) {
-      content.push({
-        type: 'image_url',
-        image_url: {
-          url: image_url,
-          detail: 'high',
-        },
-      });
-    } else if (base64_image) {
-      content.push({
-        type: 'image_url',
-        image_url: {
-          url: `data:image/jpeg;base64,${base64_image}`,
-          detail: 'high',
-        },
-      });
-    }
-    
-    // Add text prompt
-    content.push({
-      type: 'text',
-      text: prompt,
-    });
-    
-    // Create messages array
-    const messages = [
-      {
-        role: 'user',
-        content,
-      },
-    ];
-    
-    // Create options object
-    const options = {
-      model: model || 'grok-2-vision-latest',
-      ...otherOptions
-    };
-    
-    // Call Grok API
-    const response = await this.grokClient.createImageUnderstanding(messages, options);
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: response.choices[0].message.content,
-        },
-      ],
-    };
+    return this.respond(buildImageInput(args), args);
   }
 
-  /**
-   * Handle function calling tool calls
-   * @param args - Tool arguments
-   * @returns Tool response
-   */
   private async handleFunctionCalling(args: any) {
-    console.error('[Tool] Handling function_calling tool call');
-    
     const { messages, tools, tool_choice, model, ...otherOptions } = args;
-    
-    // Validate inputs
+
     if (!Array.isArray(messages) || messages.length === 0) {
       throw new Error('Messages must be a non-empty array');
     }
-    
+
     if (!Array.isArray(tools) || tools.length === 0) {
       throw new Error('Tools must be a non-empty array');
     }
-    
-    // Create options object
-    const options = {
-      model: model || 'grok-4-1-fast',
+
+    const response = await this.grokClient.createChatCompletion({
+      ...otherOptions,
+      messages,
+      tools,
       tool_choice: tool_choice || 'auto',
-      ...otherOptions
+      model: resolveModel({ model }).model,
+    });
+
+    const message = response.choices[0].message;
+    return {
+      content: [
+        {
+          type: 'text',
+          text: message.tool_calls ? JSON.stringify({ message, usage: response.usage }, null, 2) : message.content,
+        },
+      ],
     };
-    
-    // Call Grok API
-    const response = await this.grokClient.createFunctionCall(messages, tools, options);
-    
-    // Check if there are tool calls in the response
-    if (response.choices[0].message.tool_calls) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              message: response.choices[0].message,
-              usage: response.usage
-            }, null, 2),
-          },
-        ],
-      };
-    } else {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: response.choices[0].message.content,
-          },
-        ],
-      };
-    }
   }
 
   /**
@@ -487,6 +354,5 @@ class GrokMcpServer {
   }
 }
 
-// Create and run the server
-const server = new GrokMcpServer();
+const server = new GrokMcpServer(API_KEY);
 server.run().catch(console.error);

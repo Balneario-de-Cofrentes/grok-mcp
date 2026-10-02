@@ -1,285 +1,209 @@
 # Grok MCP Plugin
 
-<!-- Add badges here -->
-[![npm version](https://img.shields.io/npm/v/grok-mcp.svg?style=flat-square)](https://www.npmjs.com/package/grok-mcp) <!-- Replace with your actual package name if different -->
-[![Smithery Build Status](https://api.smithery.ai/badges/github.com/Bob-lance/grok-mcp/build-status.svg)](https://smithery.ai/Bob-lance/grok-mcp) <!-- Replace with your actual repo path -->
+A Model Context Protocol (MCP) server that gives Claude Code, Codex and Cline access to Grok: X search, web search, chat, image understanding and function calling.
 
-A Model Context Protocol (MCP) plugin that provides seamless access to Grok AI's powerful capabilities directly from Claude Code and Cline.
+> **Fork notice:** fork of [Bob-lance/grok-mcp](https://github.com/Bob-lance/grok-mcp), rewritten on top of the xAI Responses API with dedicated search tools and cost reporting.
 
-> **Fork Notice:** This is an enhanced fork with real-time web/X search support via `search_parameters`.
-> Original: [Bob-lance/grok-mcp](https://github.com/Bob-lance/grok-mcp)
+## Tools
 
-## Features
+| Tool | Use it for |
+|---|---|
+| `x_search` | Anything on X: posts, threads, users, sentiment |
+| `web_search` | Live web search and browsing |
+| `chat_completion` | Plain chat, or one request that searches the web and X together |
+| `image_understanding` | Questions about a jpg or png |
+| `function_calling` | Letting Grok choose a function call for your own tools |
 
-This plugin exposes three powerful tools through the MCP interface:
+Every answer from `x_search`, `web_search`, `chat_completion` and `image_understanding` ends with a usage line:
 
-1. **Chat Completion** - Generate text responses using Grok's language models with **real-time web/X search support**
-2. **Image Understanding** - Analyze images with Grok's vision capabilities
-3. **Function Calling** - Use Grok to call functions based on user input
+```
+[grok-4.7 · effort low · 4 X searches · 37 posts fetched · 26402 tokens · $0.2249 · 18 s]
+```
 
-### 🆕 Real-Time Search Support
+## Depth profiles
 
-This fork adds comprehensive `search_parameters` support to enable Grok's real-time web and X/Twitter search capabilities:
+`depth` picks the model and the reasoning effort. `model` and `reasoning_effort` override it.
 
-- **mode**: `auto` (model decides), `on` (force search), or `off` (disable)
-- **sources**: Array of `web`, `x`, `news`, `rss`
-- **Date filtering**: `from_date`, `to_date` (ISO 8601)
-- **Geographic filtering**: `country` code
-- **Website exclusions**: `excluded_websites` array
-- **X-specific filters**: `x_handles`, `x_min_favorites`, `x_min_views`
+| `depth` | Model | Effort | Measured on one X search |
+|---|---|---|---|
+| `quick` (default) | `grok-4.3` | `low` | ~15 s, ~$0.11, ~20 posts |
+| `standard` | `grok-4.7` | `low` | ~20 s, ~$0.22, ~40 posts |
+| `deep` | `grok-4.7` | `high` | ~60 s, ~$0.42, ~55 posts |
+| `research` | `grok-4.20-multi-agent` | `low` (4 agents) | ~40 s, ~$0.90, ~140 posts |
+
+Measured on 2026-10-02 with one query over a week of posts; one run per profile. The profiles live in `src/profiles.ts`.
+
+### What drives cost
+
+X Search bills **$5 per 1,000 posts fetched** and $10 per 1,000 profiles, on top of tokens ([xAI pricing](https://docs.x.ai/developers/pricing)). At `quick` depth the posts were about 90% of the bill. To spend less:
+
+- Set `from_date` (and `to_date`) so the model reads fewer posts.
+- Set `allowed_x_handles` when you know who to read.
+- Stay on `quick` unless the question needs more; `standard`, `deep` and `research` read more posts.
+
+Web search costs $5 per 1,000 calls: about $0.02 to $0.03 per query.
+
+### Models
+
+| Model | Context | Input / output per 1M tokens | Reasoning effort |
+|---|---|---|---|
+| `grok-4.7` | 500k | $2.00 / $6.00 | `low` to `xhigh`, default `high`, cannot be disabled |
+| `grok-4.3` | 1M | $1.25 / $2.50 | `none` to `xhigh`, default `low` |
+| `grok-4.20-multi-agent` | 1M | $1.25 / $2.50 | `low`/`medium` = 4 agents, `high`/`xhigh` = 16 |
+
+Source: `GET https://api.x.ai/v1/models` and the [models page](https://docs.x.ai/developers/models), read on 2026-10-02. Slugs retired on 2026-05-15 (`grok-4-1-fast`, `grok-3`, `grok-code-fast-1` and others) still resolve but redirect to `grok-4.3` or `grok-build-0.1`.
 
 ## Prerequisites
 
-- Node.js (v16 or higher)
-- A Grok AI API key (obtain from [console.x.ai](https://console.x.ai/))
-- Cline with MCP support
+- Node.js 20 or higher
+- An xAI API key from [console.x.ai](https://console.x.ai/)
 
 ## Installation
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/Bob-lance/grok-mcp.git
-   cd grok-mcp
-   ```
+```bash
+git clone https://github.com/Balneario-de-Cofrentes/grok-mcp.git
+cd grok-mcp
+npm install
+npm run build
+```
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+Register the server in your MCP client:
 
-3. Build the project:
-   ```bash
-   npm run build
-   ```
-
-4. Add the MCP server to your Cline MCP settings:
-
-   For VSCode Cline extension, edit the file at:
-   ```
-   ~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
-   ```
-
-   Add the following configuration:
-   ```json
-   {
-     "mcpServers": {
-       "grok-mcp": {
-         "command": "node",
-         "args": ["/path/to/grok-mcp/build/index.js"],
-         "env": {
-           "XAI_API_KEY": "your-grok-api-key"
-         },
-         "disabled": false,
-         "autoApprove": []
-       }
-     }
-   }
-   ```
-
-   Replace `/path/to/grok-mcp` with the actual path to your installation and `your-grok-api-key` with your Grok AI API key.
+```json
+{
+  "mcpServers": {
+    "grok": {
+      "command": "node",
+      "args": ["/path/to/grok-mcp/build/index.js"],
+      "env": {
+        "XAI_API_KEY": "your-xai-api-key"
+      }
+    }
+  }
+}
+```
 
 ## Usage
 
-Once installed and configured, the Grok MCP plugin provides three tools that can be used in Cline:
+### X search
 
-### Chat Completion
-
-Generate text responses using Grok's language models:
-
-```javascript
-<use_mcp_tool>
-<server_name>grok-mcp</server_name>
-<tool_name>chat_completion</tool_name>
-<arguments>
+```json
 {
-  "messages": [
-    {
-      "role": "system",
-      "content": "You are a helpful assistant."
-    },
-    {
-      "role": "user",
-      "content": "Hello, what can you tell me about Grok AI?"
-    }
-  ],
-  "temperature": 0.7
+  "query": "What are people saying about longevity clinics this week? 5 posts with handle, date and link.",
+  "from_date": "2026-09-25"
 }
-</arguments>
-</use_mcp_tool>
 ```
 
-#### With Real-Time Search
-
-Enable real-time web and X/Twitter search:
-
-```javascript
-<use_mcp_tool>
-<server_name>grok-mcp</server_name>
-<tool_name>chat_completion</tool_name>
-<arguments>
+```json
 {
-  "messages": [
-    {
-      "role": "user",
-      "content": "What are the latest AI developments this week?"
-    }
-  ],
-  "model": "grok-4-1-fast",
-  "search_parameters": {
-    "mode": "auto",
-    "sources": ["web", "x"],
-    "from_date": "2026-01-11"
-  }
+  "query": "What has the team announced this month?",
+  "allowed_x_handles": ["xai"],
+  "from_date": "2026-10-01"
 }
-</arguments>
-</use_mcp_tool>
 ```
 
-### Image Understanding
+### Web search
 
-Analyze images with Grok's vision capabilities:
-
-```javascript
-<use_mcp_tool>
-<server_name>grok-mcp</server_name>
-<tool_name>image_understanding</tool_name>
-<arguments>
+```json
 {
-  "image_url": "https://example.com/image.jpg",
-  "prompt": "What is shown in this image?"
+  "query": "What changed in xAI API pricing in September 2026?",
+  "allowed_domains": ["docs.x.ai"]
 }
-</arguments>
-</use_mcp_tool>
 ```
 
-You can also use base64-encoded images:
+### Web and X in one request
 
-```javascript
-<use_mcp_tool>
-<server_name>grok-mcp</server_name>
-<tool_name>image_understanding</tool_name>
-<arguments>
+```json
 {
-  "base64_image": "base64-encoded-image-data",
-  "prompt": "What is shown in this image?"
+  "messages": [{ "role": "user", "content": "What is the reaction to the Galleri trial results?" }],
+  "search_tools": ["web_search", "x_search"],
+  "from_date": "2026-09-23"
 }
-</arguments>
-</use_mcp_tool>
 ```
 
-### Function Calling
+### Image understanding
 
-Use Grok to call functions based on user input:
-
-```javascript
-<use_mcp_tool>
-<server_name>grok-mcp</server_name>
-<tool_name>function_calling</tool_name>
-<arguments>
+```json
 {
-  "messages": [
-    {
-      "role": "user",
-      "content": "What's the weather like in San Francisco?"
-    }
-  ],
-  "tools": [
-    {
-      "type": "function",
-      "function": {
-        "name": "get_weather",
-        "description": "Get the current weather in a given location",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "location": {
-              "type": "string",
-              "description": "The city and state, e.g. San Francisco, CA"
-            },
-            "unit": {
-              "type": "string",
-              "enum": ["celsius", "fahrenheit"],
-              "description": "The unit of temperature to use"
-            }
-          },
-          "required": ["location"]
-        }
-      }
-    }
-  ]
+  "image_url": "https://example.com/chart.png",
+  "prompt": "What does this chart show?"
 }
-</arguments>
-</use_mcp_tool>
 ```
 
-## API Reference
+## API reference
 
-### Chat Completion
+### Shared parameters
 
-Generate a response using Grok AI chat completion.
+| Parameter | Tools | Description |
+|---|---|---|
+| `depth` | all but `function_calling` | `quick` (default), `standard`, `deep`, `research` |
+| `model` | all | Overrides the model chosen by `depth` |
+| `reasoning_effort` | all but `function_calling` | `none`, `low`, `medium`, `high`, `xhigh`; overrides `depth` |
+| `max_tokens` | all but `function_calling` | Cap on output tokens, reasoning included. Not sent to the multi-agent model |
+| `max_turns` | search tools, `chat_completion` | Cap on search/reasoning turns |
+| `enable_image_understanding` | search tools, `chat_completion` | Let the model look at images it finds |
 
-**Parameters:**
+### `x_search`
 
-- `messages` (required): Array of message objects with role and content
-- `model` (optional): Grok model to use (defaults to grok-4-1-fast)
-  - `grok-4-1-fast` - 2M context, reasoning, recommended for search
-  - `grok-4-1-fast-non-reasoning` - 2M context, instant responses
-  - `grok-code-fast-1` - 256K context, optimized for coding
-  - `grok-3-mini-beta` - Economical option
-- `temperature` (optional): Sampling temperature (0-2, defaults to 1)
-- `max_tokens` (optional): Maximum number of tokens to generate (defaults to 16384)
-- `search_parameters` (optional): Enable real-time web/X search
-  - `mode` (string): `auto` (model decides), `on` (force search), or `off` (disable)
-  - `sources` (array): Array of `web`, `x`, `news`, `rss` (defaults to `["web", "x"]`)
-  - `from_date` (string): Start date for results (ISO 8601, e.g., "2026-01-11")
-  - `to_date` (string): End date for results (ISO 8601)
-  - `country` (string): Country code filter (e.g., "US", "GB")
-  - `excluded_websites` (array): Websites to exclude from results
-  - `x_handles` (array): Specific X/Twitter accounts to search
-  - `x_min_favorites` (integer): Minimum likes threshold for X posts
-  - `x_min_views` (integer): Minimum views threshold for X posts
+- `query` (required)
+- `allowed_x_handles` / `excluded_x_handles`: up to 20 handles, mutually exclusive; a leading `@` is removed
+- `from_date` / `to_date`: `YYYY-MM-DD`. Other formats are rejected because the API ignores them without an error
+- `enable_video_understanding`
 
-### Image Understanding
+### `web_search`
 
-Analyze images using Grok AI vision capabilities.
+- `query` (required)
+- `allowed_domains` / `excluded_domains`: up to 5 domains, mutually exclusive
 
-**Parameters:**
+### `chat_completion`
 
-- `prompt` (required): Text prompt to accompany the image
-- `image_url` (optional): URL of the image to analyze
-- `base64_image` (optional): Base64-encoded image data (without the data:image prefix)
-- `model` (optional): Grok vision model to use (defaults to grok-2-vision-latest)
+- `messages` (required): `{ role, content }` objects
+- `search_tools`: `"web_search"` and/or `"x_search"`; accepts every parameter of both search tools
+- `temperature`
 
-Note: Either `image_url` or `base64_image` must be provided.
+`search_parameters` was removed by xAI and is rejected with a message pointing to `search_tools`.
 
-### Function Calling
+### `image_understanding`
 
-Use Grok AI to call functions based on user input.
+- `prompt` (required)
+- `image_url` or `base64_image` (one is required); `mime_type` for base64: `image/jpeg` (default) or `image/png`
+- Images must be at least 8x8 pixels and at most 20 MiB
 
-**Parameters:**
+### `function_calling`
 
-- `messages` (required): Array of message objects with role and content
-- `tools` (required): Array of tool objects with type, function name, description, and parameters
-- `tool_choice` (optional): Tool choice mode (auto, required, none, defaults to auto)
-- `model` (optional): Grok model to use (defaults to grok-4-1-fast)
+- `messages` (required), `tools` (required), `tool_choice` (`auto`, `required`, `none`), `model`
+- Uses the Chat Completions endpoint. The multi-agent model does not support it.
+
+## Errors
+
+API errors include the status and the reason xAI returns, for example:
+
+```
+Error: xAI API 403 permission-denied: Your team has either used all available credits or reached its monthly spending limit.
+```
 
 ## Development
 
-### Project Structure
+### Project structure
 
-- `src/index.ts` - Main server implementation
-- `src/grok-api-client.ts` - Grok API client implementation
+- `src/index.ts`: MCP server and tool schemas
+- `src/profiles.ts`: depth profiles and model selection
+- `src/request.ts`: request building and validation
+- `src/format.ts`: answer, sources, usage line and error formatting
+- `src/grok-api-client.ts`: HTTP client
+- `test/`: unit tests, run against the compiled build with Node's test runner
 
-### Building
+### Building and testing
 
 ```bash
 npm run build
+npm test
 ```
 
 ### Running
 
 ```bash
-XAI_API_KEY="your-grok-api-key" node build/index.js
+XAI_API_KEY="your-xai-api-key" node build/index.js
 ```
 
 ## License
@@ -289,4 +213,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgements
 
 - [Model Context Protocol](https://github.com/modelcontextprotocol/mcp)
-- [Grok AI](https://x.ai/)
+- [xAI API](https://docs.x.ai/)

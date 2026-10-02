@@ -1,159 +1,37 @@
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import axios, { AxiosInstance } from 'axios';
+
+/** Reasoning models with server-side search can run for minutes. */
+const REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
 
 /**
- * GrokApiClient - A client for interacting with the Grok AI API
+ * GrokApiClient - A client for interacting with the xAI API
  */
 export class GrokApiClient {
   private axiosInstance: AxiosInstance;
-  private apiKey: string;
-  private baseUrl: string = 'https://api.x.ai/v1';
-  
-  /**
-   * Constructor for the GrokApiClient
-   * @param apiKey - The Grok AI API key
-   */
-  constructor(apiKey: string) {
-    this.apiKey = apiKey;
-    
-    console.error('[Setup] Initializing Grok API client...');
-    
+
+  constructor(apiKey: string, baseURL: string = 'https://api.x.ai/v1') {
     this.axiosInstance = axios.create({
-      baseURL: this.baseUrl,
+      baseURL,
+      timeout: REQUEST_TIMEOUT_MS,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`
-      }
-    });
-    
-    // Add request interceptor for logging
-    this.axiosInstance.interceptors.request.use((config) => {
-      console.error(`[API] Request to ${config.url}`);
-      return config;
-    });
-    
-    // Add response interceptor for logging
-    this.axiosInstance.interceptors.response.use(
-      (response) => {
-        console.error(`[API] Response from ${response.config.url} with status ${response.status}`);
-        return response;
+        Authorization: `Bearer ${apiKey}`,
       },
-      (error) => {
-        if (error.response) {
-          console.error(`[Error] API error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
-          console.error(`[Error] Request URL: ${error.config.url}`);
-          console.error(`[Error] Request headers: ${JSON.stringify(error.config.headers)}`);
-          console.error(`[Error] Request data: ${JSON.stringify(error.config.data)}`);
-        } else if (error.request) {
-          console.error(`[Error] No response received: ${error.message}`);
-        } else {
-          console.error(`[Error] Request error: ${error.message}`);
-        }
-        return Promise.reject(error);
-      }
-    );
-  }
-  
-  /**
-   * Make a request to the chat completions endpoint
-   * @param messages - The messages to send to the API
-   * @param options - Additional options for the request
-   * @returns The API response
-   */
-  async createChatCompletion(messages: any[], options: any = {}): Promise<any> {
-    try {
-      console.error('[API] Creating chat completion...');
-      
-      const requestBody = {
-        messages,
-        model: options.model || 'grok-3-mini-beta',
-        ...options
-      };
-      
-      const response = await this.axiosInstance.post('/chat/completions', requestBody);
-      return response.data;
-    } catch (error) {
-      console.error('[Error] Failed to create chat completion:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Make a request to the chat completions endpoint with image input
-   * @param messages - The messages to send to the API (including image content)
-   * @param options - Additional options for the request
-   * @returns The API response
-   */
-  async createImageUnderstanding(messages: any[], options: any = {}): Promise<any> {
-    try {
-      console.error('[API] Creating image understanding request...');
-      
-      const requestBody = {
-        messages,
-        model: options.model || 'grok-2-vision-latest',
-        ...options
-      };
-      
-      const response = await this.axiosInstance.post('/chat/completions', requestBody);
-      return response.data;
-    } catch (error) {
-      console.error('[Error] Failed to create image understanding request:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Make a request to the chat completions endpoint with function calling
-   * @param messages - The messages to send to the API
-   * @param tools - The tools to make available to the model
-   * @param options - Additional options for the request
-   * @returns The API response
-   */
-  async createFunctionCall(messages: any[], tools: any[], options: any = {}): Promise<any> {
-    try {
-      console.error('[API] Creating function call request...');
-
-      const requestBody = {
-        messages,
-        model: options.model || 'grok-3-mini-beta',
-        tools,
-        tool_choice: options.tool_choice || 'auto',
-        ...options
-      };
-
-      const response = await this.axiosInstance.post('/chat/completions', requestBody);
-      return response.data;
-    } catch (error) {
-      console.error('[Error] Failed to create function call request:', error);
-      throw error;
-    }
+    });
   }
 
-  /**
-   * Make a request to the Responses API (supports built-in tools like web_search, x_search)
-   * @param messages - The messages to send as input
-   * @param tools - Built-in tools array (e.g. [{type: "web_search"}, {type: "x_search"}])
-   * @param options - Additional options for the request
-   * @returns The API response
-   */
-  async createResponse(messages: any[], tools: any[], options: any = {}): Promise<any> {
-    try {
-      console.error('[API] Creating response with built-in tools...');
+  /** Responses API: text, image input and the built-in web_search / x_search tools. */
+  async createResponse(body: object): Promise<any> {
+    return this.post('/responses', body);
+  }
 
-      const { max_tokens, ...restOptions } = options;
+  /** Chat Completions API (legacy), kept for client-side function calling. */
+  async createChatCompletion(body: object): Promise<any> {
+    return this.post('/chat/completions', body);
+  }
 
-      const requestBody = {
-        input: messages,
-        model: options.model || 'grok-4-1-fast',
-        tools,
-        max_output_tokens: max_tokens || 16384,
-        ...restOptions
-      };
-
-      const response = await this.axiosInstance.post('/responses', requestBody);
-      return response.data;
-    } catch (error) {
-      console.error('[Error] Failed to create response:', error);
-      throw error;
-    }
+  private async post(path: string, body: object): Promise<any> {
+    const response = await this.axiosInstance.post(path, body);
+    return response.data;
   }
 }
