@@ -1,5 +1,5 @@
 # Stage 1: Build the application
-FROM node:18.20.8-bookworm-slim@sha256:f9ab18e354e6855ae56ef2b290dd225c1e51a564f87584b9bd21dd651838830e AS builder
+FROM node:24.22.1-trixie-slim@sha256:89c5244bc22a9bc3287d89ebc7e49b9cb5bb84cd40e6175ac3421d5a9f68b95a AS builder
 
 # Set the working directory
 WORKDIR /app
@@ -23,7 +23,7 @@ RUN npm run build
 # RUN npm prune --production
 
 # Stage 2: Create the final production image
-FROM node:18.20.8-bookworm-slim@sha256:f9ab18e354e6855ae56ef2b290dd225c1e51a564f87584b9bd21dd651838830e
+FROM node:24.22.1-trixie-slim@sha256:89c5244bc22a9bc3287d89ebc7e49b9cb5bb84cd40e6175ac3421d5a9f68b95a
 
 # Apply Debian security updates
 RUN apt-get update \
